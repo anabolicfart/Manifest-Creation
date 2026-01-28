@@ -1,0 +1,130 @@
+import pandas as pd
+from collections import defaultdict
+
+# ================= FILE PATHS =================
+SOURCE_FILE = r"C:\Users\LENOVO\Downloads\77335871.xlsx"
+MAPPING_FILE = r"C:\Users\LENOVO\Downloads\hawbs-commodities-sample.csv"
+OUTPUT_FILE = r"C:\Users\LENOVO\Documents\IBC_output.csv"
+
+SOURCE_SHEET = "Manifest Details"
+
+# ================= LOAD SOURCE =================
+src = pd.read_excel(SOURCE_FILE, sheet_name=SOURCE_SHEET)
+src.columns = src.columns.astype(str).str.strip()
+
+if "HAWB" not in src.columns:
+    raise RuntimeError("Source file must contain a 'HAWB' column")
+
+hawb_groups = defaultdict(list)
+for _, row in src.iterrows():
+    hawb_groups[row["HAWB"]].append(row)
+
+# ================= LOAD MAPPING =================
+mapping = pd.read_csv(MAPPING_FILE, header=None, dtype=str).fillna("")
+
+# ================= VALUE RESOLVER =================
+def resolve(cell, src_row):
+    cell = cell.strip()
+
+    if cell.lower() == "blank":
+        return ""
+
+    if cell.startswith('"') and cell.endswith('"'):
+        return cell[1:-1]
+
+    if cell in src_row:
+        return src_row[cell]
+
+    return ""
+
+# ================= EXTRACT TEMPLATES =================
+email_tpl = None
+mawb_tpl = None
+hawb_tpl = None
+commodity_tpl = None
+
+hawb_header = None
+commodity_header = None
+
+for i in range(len(mapping)):
+    row = mapping.iloc[i]
+    key = row[0].strip().strip('"').lower()   # 🔑 FIX
+
+    # -------- HEADERS --------
+    if key.startswith("#"):
+        header = ",".join(row.tolist()).lstrip("#").strip().split(",")
+        header[0] = "# " + header[0]
+
+        j = i + 1
+        while j < len(mapping) and mapping.iloc[j][0].strip().startswith("#"):
+            j += 1
+
+        if j < len(mapping):
+            next_key = mapping.iloc[j][0].strip().strip('"').lower()
+            if next_key == "hawb":
+                hawb_header = header
+            elif next_key == "commodity":
+                commodity_header = header
+
+    # -------- TEMPLATES --------
+    elif key == "email":
+        email_tpl = row.tolist()
+
+    elif key == "mawb":
+        mawb_tpl = row.tolist()
+
+    elif key == "hawb":
+        hawb_tpl = row.tolist()
+
+    elif key == "commodity":
+        commodity_tpl = row.tolist()
+
+# ================= VALIDATION =================
+if hawb_tpl is None:
+    raise RuntimeError("Mapping file is missing HAWB template row")
+
+if commodity_tpl is None:
+    raise RuntimeError("Mapping file is missing COMMODITY template row")
+
+# ================= BUILD OUTPUT =================
+output = []
+
+# EMAIL (once)
+if email_tpl:
+    output.append(
+        ["email"] + [resolve(c, src.iloc[0]) for c in email_tpl[1:]]
+    )
+
+# MAWB (once)
+if mawb_tpl:
+    output.append(
+        ["mawb"] + [resolve(c, src.iloc[0]) for c in mawb_tpl[1:]]
+    )
+
+# HAWB + COMMODITIES
+for hawb, rows in hawb_groups.items():
+    if hawb_header:
+        output.append(hawb_header)
+
+    output.append(
+        ["hawb"] + [resolve(c, rows[0]) for c in hawb_tpl[1:]]
+    )
+
+    for r in rows:
+        if commodity_header:
+            output.append(commodity_header)
+
+        output.append(
+            ["commodity"] + [resolve(c, r) for c in commodity_tpl[1:]]
+        )
+
+# ================= WRITE OUTPUT =================
+pd.DataFrame(output).to_csv(
+    OUTPUT_FILE,
+    index=False,
+    header=False,
+    encoding="utf-8"
+)
+
+print("✅ IBC manifest generated successfully")
+print(f"📄 Output file: {OUTPUT_FILE}")
